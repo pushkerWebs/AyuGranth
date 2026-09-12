@@ -43,44 +43,108 @@ function statusClass(status) {
   return STATUS_STYLES[status] || STATUS_STYLES['INFORMATION REQUIRED'];
 }
 
-function EvidenceCard({ item, compact = false }) {
+function formatSourceCount(evidenceList) {
+  if (!evidenceList || !evidenceList.length) return '';
+  const uniqueDocCount = new Set(evidenceList.map((e) => e.document || e.source || 'Retrieved source')).size;
+  const passageCount = evidenceList.length;
+  const sourceLabel = `${uniqueDocCount} unique source${uniqueDocCount === 1 ? '' : 's'}`;
+  const passageLabel = `${passageCount} supporting passage${passageCount === 1 ? '' : 's'}`;
+  return `${sourceLabel} · ${passageLabel}`;
+}
+
+function groupEvidenceBySource(evidenceList) {
+  if (!evidenceList || !evidenceList.length) return [];
+  const map = new Map();
+  for (const item of evidenceList) {
+    const key = item.document || item.source || 'Retrieved source';
+    if (!map.has(key)) {
+      map.set(key, {
+        document: key,
+        evidence_type: item.evidence_type,
+        verified: item.verified,
+        passages: [],
+      });
+    }
+    const group = map.get(key);
+    group.passages.push(item);
+  }
+  return Array.from(map.values());
+}
+
+function PassageItem({ item, index, total, compact }) {
   const [expanded, setExpanded] = useState(false);
   return (
-    <article className={cn('rounded-xl border border-[#161412]/10 bg-[#fbfcfa] p-4', compact && 'p-3')}>
-      <div className="flex items-start justify-between gap-4">
+    <div className={cn('py-3 first:pt-0 last:pb-0', compact && 'py-2.5')}>
+      <div className="flex items-center justify-between gap-2 text-[11px] text-[#161412]/55 mb-1.5">
+        <span className="font-semibold text-[#176B45]">
+          {total > 1 ? `Passage ${index + 1}` : 'Supporting excerpt'}
+          {item.section ? ` · Section ${item.section}` : ''}
+          {item.page ? ` · Page ${item.page}` : ''}
+        </span>
+        {item.verified && (
+          <span className="shrink-0 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[9px] font-semibold text-emerald-700">
+            Verified ID
+          </span>
+        )}
+      </div>
+      <p className={cn('text-xs leading-relaxed text-[#161412]/75', !expanded && 'line-clamp-3')}>
+        {item.excerpt || 'No excerpt was returned for this source.'}
+      </p>
+      {item.relevance && (
+        <p className="mt-2 text-[11px] leading-relaxed text-[#161412]/60">
+          <span className="font-semibold text-[#161412]/75">Why it matters:</span> {item.relevance}
+        </p>
+      )}
+      {item.excerpt && item.excerpt.length > 240 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold text-[#176B45] hover:underline"
+        >
+          {expanded ? 'Show less' : 'Read full excerpt'}{' '}
+          {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function GroupedEvidenceCard({ group, compact = false }) {
+  return (
+    <article className={cn('rounded-xl border border-[#161412]/10 bg-[#fbfcfa] p-4', compact && 'p-3.5')}>
+      <div className="flex items-start justify-between gap-4 border-b border-[#161412]/10 pb-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[#176B45]">
             <BookOpen className="h-3.5 w-3.5 shrink-0" />
-            {item.evidence_type || 'Retrieved evidence'}
+            {group.evidence_type || 'Retrieved statutory evidence'}
           </div>
-          <h4 className="mt-2 truncate text-sm font-semibold text-[#161412]" title={item.document || item.source}>
-            {item.document || item.source || 'Retrieved source'}
+          <h4 className="mt-1.5 text-sm font-semibold text-[#161412] break-words" title={group.document}>
+            {group.document}
           </h4>
-          {(item.section || item.page) && (
-            <p className="mt-1 text-[11px] text-[#161412]/50">
-              {item.section ? `Section ${item.section}` : ''}{item.section && item.page ? ' · ' : ''}{item.page ? `Page ${item.page}` : ''}
-            </p>
-          )}
         </div>
-        <span className="shrink-0 rounded-full bg-[#176B45]/10 px-2 py-1 text-[10px] font-semibold text-[#176B45]">
-          {item.verified ? 'Verified ID' : 'Retrieved'}
+        <span className="shrink-0 rounded-full bg-[#176B45]/10 px-2.5 py-1 text-[10px] font-semibold text-[#176B45]">
+          {group.passages.length} {group.passages.length === 1 ? 'passage' : 'passages'}
         </span>
       </div>
-      <p className={cn('mt-3 text-xs leading-relaxed text-[#161412]/75', !expanded && 'line-clamp-3')}>
-        {item.excerpt || 'No excerpt was returned for this source.'}
-      </p>
-      {item.relevance && <p className="mt-3 text-[11px] leading-relaxed text-[#161412]/55"><span className="font-semibold text-[#161412]/70">Why it matters:</span> {item.relevance}</p>}
-      {item.excerpt && item.excerpt.length > 260 && (
-        <button onClick={() => setExpanded(!expanded)} className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-[#176B45]">
-          {expanded ? 'Show less' : 'Read full excerpt'} {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-        </button>
-      )}
+
+      <div className="mt-3 divide-y divide-[#161412]/10">
+        {group.passages.map((passage, idx) => (
+          <PassageItem
+            key={passage.source_chunk_id || idx}
+            item={passage}
+            index={idx}
+            total={group.passages.length}
+            compact={compact}
+          />
+        ))}
+      </div>
     </article>
   );
 }
 
 function ObligationCard({ item, index }) {
   const [expanded, setExpanded] = useState(false);
+  const groupedEvidence = groupEvidenceBySource(item.evidence);
   return (
     <article className="flex h-full flex-col rounded-2xl border border-[#161412]/10 bg-white p-5 shadow-[0_8px_24px_rgba(34,55,43,0.04)] transition-shadow hover:shadow-[0_12px_30px_rgba(34,55,43,0.08)]">
       <div className="flex items-start justify-between gap-4">
@@ -98,10 +162,17 @@ function ObligationCard({ item, index }) {
       {(item.details || item.evidence?.length) && (
         <div className="mt-5 border-t border-[#161412]/10 pt-4">
           <button onClick={() => setExpanded(!expanded)} className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#176B45]">
-            {expanded ? 'Hide supporting detail' : `View supporting detail${item.evidence?.length ? ` · ${item.evidence.length} source${item.evidence.length === 1 ? '' : 's'}` : ''}`}
+            {expanded ? 'Hide supporting detail' : `View supporting detail${item.evidence?.length ? ` · ${formatSourceCount(item.evidence)}` : ''}`}
             {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
           </button>
-          {expanded && <div className="mt-4 space-y-3">{item.details && <p className="rounded-lg bg-[#f4f6f3] p-3 text-xs leading-relaxed text-[#161412]/70">{item.details}</p>}{item.evidence?.map((evidence) => <EvidenceCard key={evidence.source_chunk_id} item={evidence} compact />)}</div>}
+          {expanded && (
+            <div className="mt-4 space-y-3">
+              {item.details && <p className="rounded-lg bg-[#f4f6f3] p-3 text-xs leading-relaxed text-[#161412]/70">{item.details}</p>}
+              {groupedEvidence.map((group) => (
+                <GroupedEvidenceCard key={group.document} group={group} compact />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </article>
@@ -597,11 +668,35 @@ export default function ABSPage() {
         {/* ─── RESULTS (Stage 2) ───────────────────────────────────── */}
         {stage === 2 && result && <div className="w-full max-w-5xl space-y-7"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="eyebrow">Assessment complete</p><p className="mt-1 text-sm text-[#17211d]/55">Case-specific screening; not a legal opinion.</p></div><button onClick={resetFlow} className="rounded-lg border border-[#cfdad1] bg-white px-4 py-2 text-xs font-semibold text-[#17211d]/70 transition hover:border-[#176B45] hover:text-[#176B45]">Start over</button></div>
           <ScreeningSummary result={result} />
-          <section className="rounded-2xl border border-[#dfe6e0] bg-white p-6 shadow-[0_8px_24px_rgba(34,55,43,0.04)] md:p-8"><div className="flex flex-wrap items-start justify-between gap-5"><div><p className="eyebrow">ABS assessment</p><div className="mt-2 flex items-center gap-3"><span className={cn('h-3 w-3 rounded-full', result.color === 'green' ? 'bg-emerald-500' : result.color === 'amber' ? 'bg-orange-400' : 'bg-amber-400')} /><h2 className="text-2xl font-bold tracking-tight text-[#17211d]">{result.overall_status}</h2></div></div><div className="rounded-xl border border-[#dfe6e0] bg-[#f4f6f3] px-4 py-3 text-right"><p className="label">Evidence confidence</p><p className="mt-1 text-sm font-bold text-[#176B45]">{result.confidence}{result.confidence_score ? ` · ${Math.round(result.confidence_score * 100)}%` : ''}</p></div></div><p className="mt-6 max-w-3xl text-sm font-medium leading-relaxed text-[#17211d]/75">{result.reasoning}</p><p className="mt-5 border-t border-[#dfe6e0] pt-4 text-[11px] text-[#17211d]/50">{result.disclaimer}</p></section>
+          <section className="rounded-2xl border border-[#dfe6e0] bg-white p-6 shadow-[0_8px_24px_rgba(34,55,43,0.04)] md:p-8"><div className="flex flex-wrap items-start justify-between gap-5"><div><p className="eyebrow">ABS assessment</p><div className="mt-2 flex items-center gap-3"><span className={cn('h-3 w-3 rounded-full', result.color === 'green' ? 'bg-emerald-500' : result.color === 'amber' ? 'bg-orange-400' : 'bg-amber-400')} /><h2 className="text-2xl font-bold tracking-tight text-[#17211d]">{result.overall_status}</h2></div></div><div className="rounded-xl border border-[#dfe6e0] bg-[#f4f6f3] px-4 py-3 text-right"><p className="label">Evidence confidence</p><p className="mt-1 text-sm font-bold text-[#176B45]">{result.confidence}</p></div></div><p className="mt-6 max-w-3xl text-sm font-medium leading-relaxed text-[#17211d]/75">{result.reasoning}</p><p className="mt-5 border-t border-[#dfe6e0] pt-4 text-[11px] text-[#17211d]/50">{result.disclaimer}</p></section>
           {result.key_findings?.length > 0 && <section className="rounded-2xl border border-[#dfe6e0] bg-white p-6 shadow-sm md:p-8"><p className="eyebrow">Key compliance / legal findings</p><div className="mt-5 grid gap-3 md:grid-cols-2">{result.key_findings.slice(0, 5).map((finding, index) => <div key={`${finding}-${index}`} className="flex gap-3 rounded-xl bg-[#f4f6f3] p-4"><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#176B45]" /><p className="text-sm leading-relaxed text-[#17211d]/75">{finding}</p></div>)}</div></section>}
           {result.information_gaps?.length > 0 && <section className="rounded-2xl border border-orange-200 bg-orange-50/60 p-6 md:p-8"><div className="flex items-start gap-3"><CircleAlert className="mt-0.5 h-5 w-5 shrink-0 text-orange-700" /><div><p className="eyebrow text-orange-800">Information needed to finalize ABS pathway</p><p className="mt-2 text-sm leading-relaxed text-orange-900/75">These items are not inferred. Provide them only if they are relevant to the planned activity.</p><ul className="mt-4 grid gap-2 text-sm text-orange-950/80 md:grid-cols-2">{result.information_gaps.map((gap) => <li key={gap} className="flex gap-2"><span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-orange-500" />{gap}</li>)}</ul></div></div></section>}
           <section><div className="mb-5 flex items-end justify-between gap-4"><div><p className="eyebrow">Obligation navigator</p><h2 className="mt-2 font-serif text-3xl text-[#17211d]">Five areas, assessed separately</h2></div><p className="hidden max-w-xs text-right text-xs leading-relaxed text-[#17211d]/50 sm:block">Statuses vary by available facts and retrieved evidence. No area is marked mandatory by default.</p></div><div className="grid gap-5 lg:grid-cols-2">{obligations.map((item, index) => <ObligationCard key={item.area} item={item} index={index} />)}</div></section>
-          <section className="rounded-2xl border border-[#dfe6e0] bg-white p-6 shadow-sm md:p-8"><div className="flex items-center justify-between gap-4"><div><p className="eyebrow">Evidence / sources</p><h2 className="mt-2 font-serif text-2xl text-[#17211d]">Retrieved support for this assessment</h2></div><BookOpen className="h-6 w-6 text-[#176B45]" /></div>{result.evidence?.length ? <div className="mt-5 grid gap-4 md:grid-cols-2">{result.evidence.map((item) => <EvidenceCard key={item.source_chunk_id} item={item} />)}</div> : <div className="mt-5 rounded-xl border border-dashed border-[#cfdad1] bg-[#f4f6f3] p-6 text-sm leading-relaxed text-[#17211d]/60">No reliable supporting ABS/statutory evidence was retrieved. This result deliberately does not fabricate citations or obligations.</div>}</section>
+          <section className="rounded-2xl border border-[#dfe6e0] bg-white p-6 shadow-sm md:p-8">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="eyebrow">Evidence / sources</p>
+                <h2 className="mt-2 font-serif text-2xl text-[#17211d]">Retrieved support for this assessment</h2>
+                {result.evidence?.length > 0 && (
+                  <p className="mt-1 text-xs font-semibold text-[#176B45]">
+                    {formatSourceCount(result.evidence)}
+                  </p>
+                )}
+              </div>
+              <BookOpen className="h-6 w-6 text-[#176B45]" />
+            </div>
+            {result.evidence?.length ? (
+              <div className="mt-5 space-y-4">
+                {groupEvidenceBySource(result.evidence).map((group) => (
+                  <GroupedEvidenceCard key={group.document} group={group} />
+                ))}
+              </div>
+            ) : (
+              <div className="mt-5 rounded-xl border border-dashed border-[#cfdad1] bg-[#f4f6f3] p-6 text-sm leading-relaxed text-[#17211d]/60">
+                No reliable supporting ABS/statutory evidence was retrieved. This result deliberately does not fabricate citations or obligations.
+              </div>
+            )}
+          </section>
           <div className="flex flex-col items-center gap-4 border-t border-[#dfe6e0] pt-8 text-center"><p className="max-w-2xl text-xs leading-relaxed text-[#17211d]/55">This screening is preliminary information, not legal advice. Confirm the applicable authority and pathway with qualified counsel or the relevant biodiversity authority before access, utilization, commercialization, or IP filing.</p><button onClick={resetFlow} className="inline-flex items-center gap-2 rounded-lg border border-[#cfdad1] bg-white px-5 py-2.5 text-xs font-semibold text-[#17211d]/70 transition hover:border-[#176B45] hover:text-[#176B45]">Run another screening <ArrowRight className="h-3.5 w-3.5" /></button></div>
         </div>}
       </main>

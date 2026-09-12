@@ -74,7 +74,7 @@ class ABSScreenResponse(BaseModel):
     obligations: list[ObligationItem] = Field(default_factory=list)
     evidence: list[EvidenceItem] = Field(default_factory=list)
     confidence: str = "INSUFFICIENT EVIDENCE"
-    confidence_score: float = 0.0
+    confidence_score: float | None = None
     sources: list[str] = Field(default_factory=list)
     escalate: bool = False
     response_status: str = "insufficient_evidence"
@@ -206,6 +206,32 @@ def _status_color(status: str) -> str:
     }.get(status, "slate")
 
 
+# ── AI Failure Message Filter ────────────────────────────────────────────
+
+_AI_FAILURE_TERMS = (
+    "could not be completed",
+    "could not be fully completed",
+    "ai synthesis",
+    "synthesis could not",
+    "could not be generated",
+    "could not be fully generated",
+    "stage exception",
+    "timeout",
+    "timed out",
+    "traditional knowledge analysis could not",
+    "formulation guidance could not",
+    "patentability assessment requires further",
+    "prior-art analysis could not",
+)
+
+
+def _is_ai_failure_text(text: str | None) -> bool:
+    if not text:
+        return False
+    lower = text.lower()
+    return any(term in lower for term in _AI_FAILURE_TERMS)
+
+
 # ── Parse RAG answer to extract per-area findings ────────────────────────
 
 def _parse_area_findings(rag_result: dict[str, Any]) -> dict[str, str]:
@@ -216,10 +242,15 @@ def _parse_area_findings(rag_result: dict[str, Any]) -> dict[str, str]:
     answer = _clean(rag_result.get("answer") or rag_result.get("assessment"))
     why = _clean(rag_result.get("why"))
     key_points = rag_result.get("key_points") or []
-    combined_text = f"{answer} {why} {' '.join(str(p) for p in key_points)}"
-    combined_lower = combined_text.lower()
+    
+    # Exclude internal AI errors from per-area finding parsing
+    text_chunks = [t for t in [answer, why] if t and not _is_ai_failure_text(t)]
+    text_chunks.extend(str(p) for p in key_points if p and not _is_ai_failure_text(str(p)))
+    combined_text = " ".join(text_chunks)
 
     area_findings: dict[str, str] = {}
+    if not combined_text.strip():
+        return area_findings
 
     for area, terms in _AREA_TERMS.items():
         # Collect sentences that match this area's terms
@@ -227,7 +258,7 @@ def _parse_area_findings(rag_result: dict[str, Any]) -> dict[str, str]:
         matched: list[str] = []
         for sentence in sentences:
             s_lower = sentence.lower()
-            if any(term in s_lower for term in terms):
+            if any(term in s_lower for term in terms) and not _is_ai_failure_text(sentence):
                 cleaned = sentence.strip()
                 if cleaned and len(cleaned) > 15:
                     matched.append(cleaned)
@@ -341,8 +372,10 @@ def _build_obligation(
     details = ""
     if has_evidence:
         rag_answer = _clean(rag_result.get("answer") or rag_result.get("assessment"))
-        if rag_answer:
+        if rag_answer and not _is_ai_failure_text(rag_answer):
             details = rag_answer
+        elif area_evidence:
+            details = f"Retrieved regulatory provisions from {area_evidence[0].document} are available for {area.lower()} review."
 
     return ObligationItem(
         area=area,
@@ -586,7 +619,11 @@ async def _assess(request: ABSScreenRequest) -> dict[str, Any]:
 
     if request.is_biological is not False and (request.ingredients or _clean(request.source_region) or _clean(request.product_use)):
         try:
-            rag_result = await run_rag_query(_build_query(request), jurisdiction=_clean(request.source_region) or None)
+            rag_result = await run_rag_query(
+                _build_query(request),
+                jurisdiction=_clean(request.source_region) or None,
+                intent_override="ABS",
+            )
         except Exception as exc:
             logger.warning("ABS evidence retrieval failed: %s", exc)
             rag_result = {
@@ -604,21 +641,44 @@ async def _assess(request: ABSScreenRequest) -> dict[str, Any]:
     # Compute overall status with evidence factored in
     status, applicable, color = _overall_status(request, region_triggers, evidence, gaps)
 
-    confidence_label = _clean(rag_result.get("confidence_label")).upper() or "INSUFFICIENT EVIDENCE"
-    confidence_score = float(rag_result.get("confidence") or 0.0)
+    # Qualitative evidence confidence only: HIGH, MODERATE, LOW, INSUFFICIENT EVIDENCE
+    # Reflects evidence quality/coverage, not a hardcoded percentage.
     if not evidence:
         confidence_label = "INSUFFICIENT EVIDENCE"
-        confidence_score = 0.0
-    elif confidence_label in {"LOW", "PRELIMINARY"}:
-        confidence_label = "LOW"
-    elif confidence_label not in {"HIGH", "MODERATE"}:
-        confidence_label = "MODERATE"
+    else:
+        verified_count = sum(1 for e in evidence if e.verified)
+        has_statutory = any("regulation" in (e.document or "").lower() or "act" in (e.document or "").lower() for e in evidence)
+        facts_count = sum(
+            1 for v in [
+                request.source_region,
+                request.applicant_entity_status,
+                request.research_or_commercial_purpose,
+                request.access_use_context,
+            ] if _clean(v)
+        )
+        if len(evidence) >= 3 and verified_count >= 2 and facts_count >= 3 and has_statutory:
+            confidence_label = "HIGH"
+        elif len(evidence) >= 2 or verified_count >= 1 or has_statutory:
+            confidence_label = "MODERATE"
+        else:
+            confidence_label = "LOW"
+    confidence_score = None
 
-    key_findings = [str(item).strip() for item in (rag_result.get("key_points") or []) if str(item).strip()]
-    if not key_findings:
-        key_findings = [item.relevance for item in evidence if item.relevance][:5]
-    if not evidence:
-        key_findings = ["No reliable ABS/statutory evidence was retrieved for this screening."]
+    raw_findings = [str(item).strip() for item in (rag_result.get("key_points") or []) if str(item).strip()]
+    clean_findings = [
+        item for item in raw_findings
+        if not _is_ai_failure_text(item)
+        and not any(k in item.lower() for k in ("samhita", "treatise", "tkdl", "classical reference", "classical and treatise"))
+    ]
+    if not clean_findings and evidence:
+        clean_findings = [
+            "Biological Diversity Act and regulatory provisions retrieved for review.",
+            "Approval, intimation, and benefit-sharing requirements depend on applicant status and intended commercial or research use.",
+            "Applicable authority and procedural requirements must be confirmed against verified case facts.",
+        ]
+    elif not evidence:
+        clean_findings = ["No reliable ABS/statutory evidence was retrieved for this screening."]
+    key_findings = clean_findings
 
     # Parse LLM answer to extract per-area findings
     area_findings = _parse_area_findings(rag_result)
@@ -629,9 +689,15 @@ async def _assess(request: ABSScreenRequest) -> dict[str, Any]:
     ]
 
     reasoning = _clean(rag_result.get("why") or rag_result.get("answer"))
-    if not reasoning:
-        reasoning = "The pathway cannot be finalized from the supplied facts and retrieved evidence."
-    if not evidence:
+    if _is_ai_failure_text(reasoning) or not reasoning:
+        if evidence:
+            reasoning = (
+                "ABS consideration may apply based on the submitted facts and retrieved regulatory evidence. "
+                "Applicability of specific obligations depends on the applicable legal pathway and the remaining case facts."
+            )
+        else:
+            reasoning = "No reliable ABS/statutory evidence was retrieved. The system is abstaining from specific legal conclusions."
+    elif not evidence:
         reasoning = "No reliable ABS/statutory evidence was retrieved. The system is abstaining from specific legal conclusions."
 
     sources = list(dict.fromkeys(item.source_chunk_id for item in evidence))

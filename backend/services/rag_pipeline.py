@@ -192,12 +192,12 @@ def _get_intent_fallback(intent: str, chunks: List[Dict[str, Any]]) -> Dict[str,
             "confidence_label": "preliminary",
         },
         "ABS": {
-            "assessment": "ABS assessment requires further analysis.",
-            "why": "The AI synthesis could not be completed. Retrieved regulatory provisions and biological resource guidelines are displayed below.",
+            "assessment": "ABS consideration may apply based on the submitted facts and retrieved regulatory evidence.",
+            "why": "ABS consideration may apply based on the submitted facts and retrieved regulatory evidence. Applicability of specific obligations depends on the applicable legal pathway and the remaining case facts.",
             "key_points": [
-                "Biological Diversity Act and Access & Benefit Sharing provisions retrieved for review.",
-                "Commercial utilization and research approvals (Form I / Form III) must be checked with NBA/SBB.",
-                "No exemption or compliance clearance is asserted without full legal review."
+                "Biological Diversity Act and regulatory provisions retrieved for review.",
+                "Approval, intimation, and benefit-sharing requirements depend on applicant status and intended commercial or research use.",
+                "Applicable authority and procedural requirements must be confirmed against verified case facts.",
             ],
             "confidence_label": "preliminary",
         },
@@ -371,25 +371,35 @@ async def _invoke_llm_with_retry(
     return None, False, error_type
 
 
-async def run_rag_query(query: str, jurisdiction: Optional[str] = "India") -> Dict[str, Any]:
+async def run_rag_query(
+    query: str,
+    jurisdiction: Optional[str] = "India",
+    intent_override: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Execute the complete end-to-end RAG pipeline:
     USER QUERY → INTENT ROUTING → RETRIEVAL → EVIDENCE NORMALIZATION → AI SYNTHESIS → VALIDATION → FINAL RESPONSE
     """
     total_start = time.time()
-    logger.info("[ASK] Incoming Query: '%s' | Jurisdiction: %s", query[:80], jurisdiction)
+    logger.info("[ASK] Incoming Query: '%s' | Jurisdiction: %s | Intent Override: %s", query[:80], jurisdiction, intent_override)
 
     stage_timings: Dict[str, float] = {}
 
     # ── STAGE 0: INTENT ROUTING ──────────────────────────────────────────────
-    intent_start = time.time()
-    intent_data = classify_intent(query)
-    intent = intent_data.get("intent", "GENERAL_RESEARCH")
-    stage_timings["INTENT_ROUTING"] = round(time.time() - intent_start, 4)
-    logger.info(
-        "[INTENT ROUTER] Classified query as '%s' (conf=%.2f, reason='%s') in %.3fs",
-        intent, intent_data.get("confidence", 0.0), intent_data.get("reason", ""), stage_timings["INTENT_ROUTING"]
-    )
+    if intent_override:
+        intent = intent_override
+        intent_data = {"intent": intent_override, "confidence": 1.0, "reason": "Explicit intent override"}
+        stage_timings["INTENT_ROUTING"] = 0.0
+        logger.info("[INTENT ROUTER] Intent overridden as '%s'", intent)
+    else:
+        intent_start = time.time()
+        intent_data = classify_intent(query)
+        intent = intent_data.get("intent", "GENERAL_RESEARCH")
+        stage_timings["INTENT_ROUTING"] = round(time.time() - intent_start, 4)
+        logger.info(
+            "[INTENT ROUTER] Classified query as '%s' (conf=%.2f, reason='%s') in %.3fs",
+            intent, intent_data.get("confidence", 0.0), intent_data.get("reason", ""), stage_timings["INTENT_ROUTING"]
+        )
 
     # ── STAGE 1: RETRIEVAL & EMBEDDINGS ──────────────────────────────────────
     retrieval_start = time.time()

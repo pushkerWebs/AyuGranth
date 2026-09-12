@@ -133,7 +133,6 @@ export default function ABS() {
             <p className="text-sm text-[#161412]/75">{result.reasoning}</p>
             <div className="mt-3 flex items-center gap-4 text-xs text-[#161412]/55">
               <span>Confidence: <strong className="text-[#176B45]">{result.confidence}</strong></span>
-              {result.confidence_score > 0 && <span>{Math.round(result.confidence_score * 100)}%</span>}
             </div>
           </div>
 
