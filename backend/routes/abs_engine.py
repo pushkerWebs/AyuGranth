@@ -291,6 +291,43 @@ def _detect_authority_from_evidence(evidence: list[EvidenceItem]) -> str | None:
     return None
 
 
+def _is_non_commercial_research(request: ABSScreenRequest) -> bool:
+    """Return True if user explicitly declared non-commercial academic/research purpose."""
+    texts = [
+        request.research_or_commercial_purpose or "",
+        request.access_use_context or "",
+        request.applicant_entity_status or "",
+    ]
+    combined = " ".join(texts).lower()
+    return any(term in combined for term in ("non-commercial", "academic", "basic research", "scholarly", "university", "academic research"))
+
+
+def _is_commercial_utilisation(request: ABSScreenRequest) -> bool:
+    """Return True if user declared commercial purpose/use."""
+    if _is_non_commercial_research(request):
+        return False
+    texts = [
+        request.research_or_commercial_purpose or "",
+        request.access_use_context or "",
+        request.product_use or "",
+    ]
+    combined = " ".join(texts).lower()
+    return any(term in combined for term in ("commercial", "manufacturing", "sale", "market", "industrial", "product development", "for profit"))
+
+
+def _is_no_ip_planned(ip_text: str | None) -> bool:
+    """Return True if user explicitly stated that no patent or IP filing is planned."""
+    if not ip_text:
+        return False
+    lower = ip_text.lower().strip()
+    no_indicators = [
+        "no patent", "not planned", "no ip", "none", "no patent application",
+        "no current patent", "not applying", "no filing", "neither planned nor filed",
+        "not applicable", "n/a", "no", "false",
+    ]
+    return any(ind in lower for ind in no_indicators)
+
+
 # ── Evidence-grounded obligation builder ─────────────────────────────────
 
 def _build_obligation(
@@ -311,8 +348,13 @@ def _build_obligation(
         status = "INFORMATION REQUIRED"
     elif request.is_biological is False:
         status = "NOT CLEARLY TRIGGERED"
-    elif area == "IPR / DISCLOSURE" and not _clean(request.ip_activity):
-        status = "INFORMATION REQUIRED"
+    elif area == "IPR / DISCLOSURE":
+        if _is_no_ip_planned(request.ip_activity):
+            status = "NOT CLEARLY TRIGGERED"
+        elif not _clean(request.ip_activity):
+            status = "INFORMATION REQUIRED"
+        else:
+            status = "POTENTIALLY APPLICABLE"
     elif area in {"APPROVAL / INTIMATION", "COMPETENT AUTHORITY", "BENEFIT-SHARING"}:
         # Keep conditional: exact statutory pathway and exemptions require confirmation
         status = "POTENTIALLY APPLICABLE"
@@ -341,9 +383,17 @@ def _build_obligation(
     # ── Build why_it_matters (legally grounded) ──────────────────────
 
     if status == "NOT CLEARLY TRIGGERED":
-        meaning = "The provided screening states that the resource is not biological, so this area is not clearly triggered by the submitted facts."
-        next_step = "Re-run the screening if the biological origin or resource facts change."
-        why = "The screening cannot apply a biological-resource pathway to a purely non-biological declaration."
+        if area == "IPR / DISCLOSURE" and _is_no_ip_planned(request.ip_activity):
+            meaning = (
+                "No current patent activity was reported. IP-related requirements should be "
+                "reassessed if the research later results in an IP filing, licensing, assignment, or commercialization activity."
+            )
+            next_step = "Reassess Section 6 / patent disclosure obligations only if an intellectual property application is contemplated in the future."
+            why = "ABS patent disclosure requirements under Section 6 are triggered upon applying for intellectual property rights based on biological resources."
+        else:
+            meaning = "The provided screening states that the resource is not biological, so this area is not clearly triggered by the submitted facts."
+            next_step = "Re-run the screening if the biological origin or resource facts change."
+            why = "The screening cannot apply a biological-resource pathway to a purely non-biological declaration."
 
     elif status == "INFORMATION REQUIRED":
         # Identify the specific missing facts relevant to THIS area
@@ -373,7 +423,9 @@ def _build_obligation(
 
     # ── Include RAG answer as supporting details ─────────────────────
     details = ""
-    if has_evidence:
+    if area == "IPR / DISCLOSURE" and _is_no_ip_planned(request.ip_activity):
+        details = "No current patent activity reported. Section 6 patent disclosure requirements remain untriggered at this stage."
+    elif has_evidence:
         rag_answer = _clean(rag_result.get("answer") or rag_result.get("assessment"))
         if rag_answer and not _is_ai_failure_text(rag_answer):
             details = rag_answer
@@ -388,7 +440,7 @@ def _build_obligation(
         next_step=next_step,
         why_it_matters=why,
         details=details,
-        evidence=area_evidence,
+        evidence=area_evidence if status != "NOT CLEARLY TRIGGERED" else [],
     )
 
 
@@ -452,34 +504,57 @@ def _grounded_meaning_for_area(
     qualifier = "may be applicable" if partial else "is relevant"
 
     if area == "COMPETENT AUTHORITY":
-        detected = _detect_authority_from_evidence([])  # Will use area_evidence in caller context
-        base = f"Based on the stated biological origin ({ingredients_str}) and source region ({region}), a competent authority pathway {qualifier}."
-        if llm_finding:
-            base += f" The retrieved evidence indicates: {llm_finding[:250]}"
-        elif evidence_excerpt:
-            base += f" Retrieved evidence from {evidence_source} discusses: \"{evidence_excerpt[:200]}...\""
-        if partial:
-            base += " The specific authority (e.g. NBA, SBB, or another body) cannot be conclusively determined without additional facts."
+        base = (
+            f"Based on the stated biological origin ({ingredients_str}) and source region ({region}), "
+            f"the applicable competent authority and statutory pathway require confirmation based on the exact case facts, "
+            f"applicant institutional classification, and statutory coverage. "
+            f"Jurisdiction cannot be assigned automatically without confirming whether central, state, or collaborative research provisions govern the activity."
+        )
         return base
 
     elif area == "APPROVAL / INTIMATION":
-        return (
-            "The submitted facts indicate that the Section 7 commercial-utilisation pathway may be relevant. "
-            "Prior intimation requirements should be confirmed based on the exact biological resource, "
-            "source/access circumstances, and any applicable exemption."
-        )
+        if _is_non_commercial_research(request):
+            entity = _display(request.applicant_entity_status)
+            entity_clause = f"applicant institutional classification ({entity})" if entity != "Not provided" else "applicant institutional classification"
+            return (
+                f"The submitted facts indicate non-commercial academic research involving biological resources ({ingredients_str}). "
+                f"For non-commercial research, approval and access pathways depend on {entity_clause} "
+                f"(such as Section 3 approval for foreign entities or collaborative research guidelines under Section 5). "
+                f"Procedural requirements should be confirmed based on the exact research protocol, institutional arrangements, "
+                f"and any applicable research exemptions."
+            )
+        else:
+            return (
+                "The submitted facts indicate that the Section 7 commercial-utilisation pathway may be relevant. "
+                "Prior intimation requirements should be confirmed based on the exact biological resource, "
+                "source/access circumstances, and any applicable exemption."
+            )
 
     elif area == "BENEFIT-SHARING":
-        base = f"Benefit-sharing considerations {qualifier} given the biological origin of {ingredients_str}."
-        if llm_finding:
-            base += f" {llm_finding[:250]}"
-        elif evidence_excerpt:
-            base += f" Evidence from {evidence_source}: \"{evidence_excerpt[:200]}...\""
-        # Always conditional per requirement 5
-        base += " If the applicable ABS framework is triggered for this access/use, benefit-sharing conditions may need to be determined by the competent authority under the applicable framework."
-        return base
+        if _is_non_commercial_research(request):
+            return (
+                f"For non-commercial academic research involving {ingredients_str}, benefit-sharing obligations and upfront payments "
+                f"are not automatically payable. Under applicable ABS regulations, benefit-sharing requirements depend on the specific "
+                f"statutory access pathway and may be waived or determined on a case-by-case basis for qualifying academic and non-commercial research. "
+                f"Benefit-sharing conditions would generally only be triggered if the research leads to subsequent commercial utilization, "
+                f"transfer, or intellectual property commercialization."
+            )
+        else:
+            base = f"Benefit-sharing considerations {qualifier} given the biological origin of {ingredients_str}."
+            if llm_finding:
+                base += f" {llm_finding[:250]}"
+            elif evidence_excerpt:
+                base += f" Evidence from {evidence_source}: \"{evidence_excerpt[:200]}...\""
+            # Always conditional per requirement
+            base += " If the applicable ABS framework is triggered for this access/use, benefit-sharing conditions may need to be determined by the competent authority under the applicable framework."
+            return base
 
     elif area == "IPR / DISCLOSURE":
+        if _is_no_ip_planned(request.ip_activity):
+            return (
+                "No current patent activity was reported. IP-related requirements should be "
+                "reassessed if the research later results in an IP filing, licensing, assignment, or commercialization activity."
+            )
         ip = _display(request.ip_activity)
         if ip != "Not provided":
             base = f"Based on the stated IP activity ({ip}) involving {ingredients_str}, IPR/disclosure requirements {qualifier}."
@@ -494,13 +569,20 @@ def _grounded_meaning_for_area(
         return base
 
     else:  # REQUIRED DOCUMENTATION
-        base = f"Documentation requirements {qualifier} for the use of {ingredients_str} from {region}."
-        if llm_finding:
-            base += f" {llm_finding[:250]}"
-        elif evidence_excerpt:
-            base += f" Evidence from {evidence_source}: \"{evidence_excerpt[:200]}...\""
-        if partial:
-            base += " The specific documentation depends on the applicable pathway and competent authority determination."
+        if _is_non_commercial_research(request):
+            base = (
+                f"Documentation requirements {qualifier} for the non-commercial research use of {ingredients_str} from {region}. "
+                f"Where academic research is conducted by an institutional applicant, documentation typically includes institutional affiliation records, "
+                f"research protocol approvals, material transfer agreements (if applicable), and evidence of non-commercial intent."
+            )
+        else:
+            base = f"Documentation requirements {qualifier} for the use of {ingredients_str} from {region}."
+            if llm_finding:
+                base += f" {llm_finding[:250]}"
+            elif evidence_excerpt:
+                base += f" Evidence from {evidence_source}: \"{evidence_excerpt[:200]}...\""
+            if partial:
+                base += " The specific documentation depends on the applicable pathway and competent authority determination."
         return base
 
 
@@ -511,30 +593,33 @@ def _grounded_next_step_for_area(
 ) -> str:
     """Build a case-specific next step based on available/missing facts."""
     if area == "COMPETENT AUTHORITY":
-        if not _clean(request.applicant_entity_status):
-            return "Confirm the applicant/entity status and nature of access to determine whether NBA, SBB, or another authority applies."
-        detected = _detect_authority_from_evidence(area_evidence)
-        if detected:
-            return f"Review the cited evidence regarding {detected} jurisdiction and confirm that its scope matches the planned activity."
-        return "Review the cited statutory passage and confirm which authority has jurisdiction for this access/use scenario."
+        return "Confirm the applicant entity classification, research mandate, and exact access circumstances with qualified counsel or the relevant biodiversity authority to establish jurisdiction."
 
     elif area == "APPROVAL / INTIMATION":
+        if _is_non_commercial_research(request):
+            return "Confirm applicant institutional classification and verify whether Section 3 approval or a Section 5 collaborative research framework governs this academic activity."
         if not _clean(request.research_or_commercial_purpose):
             return "Clarify whether the intended purpose is research or commercial utilization to determine the approval pathway."
         return "Review the cited approval/intimation requirements against the planned activity and confirm the applicable form/process."
 
     elif area == "BENEFIT-SHARING":
+        if _is_non_commercial_research(request):
+            return "Maintain documentation confirming non-commercial academic use, and confirm with the competent authority whether a research waiver or exemption applies to benefit-sharing."
         if not _clean(request.research_or_commercial_purpose):
             return "Determine the nature of use (research vs. commercial) to assess whether benefit-sharing conditions are triggered."
         return "If the ABS pathway is triggered, consult the competent authority to determine any applicable benefit-sharing terms."
 
     elif area == "IPR / DISCLOSURE":
+        if _is_no_ip_planned(request.ip_activity):
+            return "Reassess Section 6 / patent disclosure obligations only if an IP filing is contemplated in the future."
         ip = _display(request.ip_activity)
         if ip == "Not provided":
             return "Confirm whether any IP application is planned or filed, and the applicant/entity status, to assess IPR/ABS disclosure requirements."
         return "Review the cited disclosure requirements against the planned IP activity and confirm compliance steps with qualified counsel."
 
     else:  # REQUIRED DOCUMENTATION
+        if _is_non_commercial_research(request):
+            return "Compile academic affiliation records, research protocols, and material provenance documentation before initiating research activities."
         return "Identify the applicable pathway and authority, then confirm the specific forms and documentation needed for compliance."
 
 
@@ -545,17 +630,17 @@ def _grounded_why_for_area(area: str, evidence_source: str, partial: bool) -> st
     if area == "COMPETENT AUTHORITY":
         base = f"The competent authority determines the legal pathway, forms, and compliance requirements{source_note}."
         if partial:
-            base += " An incorrect authority assumption may lead to non-compliance."
+            base += " Confirming authority jurisdiction prevents filing under an incorrect statutory mechanism."
         return base
 
     elif area == "APPROVAL / INTIMATION":
-        base = f"Accessing biological resources without required approvals may result in penalties under the applicable framework{source_note}."
+        base = f"Accessing biological resources without required statutory permissions may result in non-compliance under biodiversity legislation{source_note}."
         return base
 
     elif area == "BENEFIT-SHARING":
-        base = f"Benefit-sharing is a conditional obligation that is determined only after the applicable ABS pathway is confirmed{source_note}."
+        base = f"Benefit-sharing is a conditional obligation determined by the competent authority only after the applicable ABS pathway is established{source_note}."
         if partial:
-            base += " A conditional assessment avoids treating a general statutory provision as an automatic obligation."
+            base += " A conditional assessment avoids treating general statutory benefit-sharing terms as an automatic commercial payment."
         return base
 
     elif area == "IPR / DISCLOSURE":
@@ -563,7 +648,7 @@ def _grounded_why_for_area(area: str, evidence_source: str, partial: bool) -> st
         return base
 
     else:  # REQUIRED DOCUMENTATION
-        base = f"Proper documentation demonstrates compliance and supports downstream IP and regulatory activities{source_note}."
+        base = f"Proper documentation demonstrates compliance and supports downstream research, regulatory, and IP activities{source_note}."
         return base
 
 
@@ -648,19 +733,10 @@ async def _assess(request: ABSScreenRequest) -> dict[str, Any]:
     else:
         verified_count = sum(1 for e in evidence if e.verified)
         has_statutory = any("regulation" in (e.document or "").lower() or "act" in (e.document or "").lower() for e in evidence)
-        # For preliminary screening where exact statutory pathways and exemptions
-        # still require confirmation, confidence is kept at MODERATE
-        facts_provided = all([
-            _clean(request.source_region),
-            _clean(request.applicant_entity_status),
-            _clean(request.research_or_commercial_purpose),
-            _clean(request.access_use_context),
-            _clean(request.procurement_details),
-            _clean(request.existing_permissions),
-        ])
-        if len(evidence) >= 4 and verified_count >= 3 and facts_provided and has_statutory:
-            confidence_label = "HIGH"
-        elif len(evidence) >= 1 or verified_count >= 1 or has_statutory:
+        # For preliminary screening where retrieved evidence provides relevant statutory support,
+        # but the exact legal pathway and any applicable exemptions/conditions require additional confirmation,
+        # confidence is calibrated to MODERATE.
+        if len(evidence) >= 1 or verified_count >= 1 or has_statutory:
             confidence_label = "MODERATE"
         else:
             confidence_label = "LOW"
@@ -673,11 +749,18 @@ async def _assess(request: ABSScreenRequest) -> dict[str, Any]:
         and not any(k in item.lower() for k in ("samhita", "treatise", "tkdl", "classical reference", "classical and treatise"))
     ]
     if not clean_findings and evidence:
-        clean_findings = [
-            "Biological Diversity Act and regulatory provisions retrieved for review.",
-            "Approval, intimation, and benefit-sharing requirements depend on applicant status and intended commercial or research use.",
-            "Applicable authority and procedural requirements must be confirmed against verified case facts.",
-        ]
+        if _is_non_commercial_research(request):
+            clean_findings = [
+                "Biological Diversity Act and regulatory provisions retrieved for review.",
+                "Non-commercial academic research is subject to specific research pathways, institutional guidelines, and conditional benefit-sharing terms.",
+                "Applicable authority jurisdiction and procedural requirements must be confirmed against verified institutional facts.",
+            ]
+        else:
+            clean_findings = [
+                "Biological Diversity Act and regulatory provisions retrieved for review.",
+                "Approval, intimation, and benefit-sharing requirements depend on applicant status and intended commercial or research use.",
+                "Applicable authority and procedural requirements must be confirmed against verified case facts.",
+            ]
     elif not evidence:
         clean_findings = ["No reliable ABS/statutory evidence was retrieved for this screening."]
     key_findings = clean_findings
@@ -693,10 +776,16 @@ async def _assess(request: ABSScreenRequest) -> dict[str, Any]:
     reasoning = _clean(rag_result.get("why") or rag_result.get("answer"))
     if _is_ai_failure_text(reasoning) or not reasoning:
         if evidence:
-            reasoning = (
-                "ABS consideration may apply based on the submitted facts and retrieved regulatory evidence. "
-                "Applicability of specific obligations depends on the applicable legal pathway and the remaining case facts."
-            )
+            if _is_non_commercial_research(request):
+                reasoning = (
+                    "ABS consideration may apply based on the submitted biological resources and retrieved regulatory evidence. "
+                    "For non-commercial academic research, applicability of specific approval and benefit-sharing obligations depends on the applicant's institutional status, statutory research pathways, and verified case facts."
+                )
+            else:
+                reasoning = (
+                    "ABS consideration may apply based on the submitted facts and retrieved regulatory evidence. "
+                    "Applicability of specific obligations depends on the applicable legal pathway and the remaining case facts."
+                )
         else:
             reasoning = "No reliable ABS/statutory evidence was retrieved. The system is abstaining from specific legal conclusions."
     elif not evidence:
