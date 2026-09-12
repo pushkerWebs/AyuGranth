@@ -101,8 +101,12 @@ function PassageItem({ item, index, total, compact }) {
           onClick={() => setExpanded(!expanded)}
           className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold text-[#176B45] hover:underline"
         >
-          {expanded ? 'Show less' : 'Read full excerpt'}{' '}
-          {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          <span>{expanded ? 'Show less' : 'Read full excerpt'}</span>
+          {expanded ? (
+            <ChevronUp className="h-3.5 w-3.5 shrink-0" aria-hidden="true" focusable="false" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" focusable="false" />
+          )}
         </button>
       )}
     </div>
@@ -115,7 +119,7 @@ function GroupedEvidenceCard({ group, compact = false }) {
       <div className="flex items-start justify-between gap-4 border-b border-[#161412]/10 pb-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[#176B45]">
-            <BookOpen className="h-3.5 w-3.5 shrink-0" />
+            <BookOpen className="h-3.5 w-3.5 shrink-0" aria-hidden="true" focusable="false" />
             {group.evidence_type || 'Retrieved statutory evidence'}
           </div>
           <h4 className="mt-1.5 text-sm font-semibold text-[#161412] break-words" title={group.document}>
@@ -161,9 +165,21 @@ function ObligationCard({ item, index }) {
       </div>
       {(item.details || item.evidence?.length) && (
         <div className="mt-5 border-t border-[#161412]/10 pt-4">
-          <button onClick={() => setExpanded(!expanded)} className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#176B45]">
-            {expanded ? 'Hide supporting detail' : `View supporting detail${item.evidence?.length ? ` · ${formatSourceCount(item.evidence)}` : ''}`}
-            {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#176B45] hover:text-[#115234]"
+          >
+            <span>
+              {expanded
+                ? 'Hide supporting detail'
+                : `View supporting detail${item.evidence?.length ? ` · ${formatSourceCount(item.evidence)}` : ''}`}
+            </span>
+            {expanded ? (
+              <ChevronUp className="h-3.5 w-3.5 shrink-0" aria-hidden="true" focusable="false" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" focusable="false" />
+            )}
           </button>
           {expanded && (
             <div className="mt-4 space-y-3">
@@ -683,7 +699,7 @@ export default function ABSPage() {
                   </p>
                 )}
               </div>
-              <BookOpen className="h-6 w-6 text-[#176B45]" />
+              <BookOpen className="h-6 w-6 text-[#176B45]" aria-hidden="true" focusable="false" />
             </div>
             {result.evidence?.length ? (
               <div className="mt-5 space-y-4">
@@ -697,7 +713,7 @@ export default function ABSPage() {
               </div>
             )}
           </section>
-          <div className="flex flex-col items-center gap-4 border-t border-[#dfe6e0] pt-8 text-center"><p className="max-w-2xl text-xs leading-relaxed text-[#17211d]/55">This screening is preliminary information, not legal advice. Confirm the applicable authority and pathway with qualified counsel or the relevant biodiversity authority before access, utilization, commercialization, or IP filing.</p><button onClick={resetFlow} className="inline-flex items-center gap-2 rounded-lg border border-[#cfdad1] bg-white px-5 py-2.5 text-xs font-semibold text-[#17211d]/70 transition hover:border-[#176B45] hover:text-[#176B45]">Run another screening <ArrowRight className="h-3.5 w-3.5" /></button></div>
+          <div className="flex flex-col items-center gap-4 border-t border-[#dfe6e0] pt-8 text-center"><p className="max-w-2xl text-xs leading-relaxed text-[#17211d]/55">This screening is preliminary information, not legal advice. Confirm the applicable authority and pathway with qualified counsel or the relevant biodiversity authority before access, utilization, commercialization, or IP filing.</p><button onClick={resetFlow} className="inline-flex items-center gap-2 rounded-lg border border-[#cfdad1] bg-white px-5 py-2.5 text-xs font-semibold text-[#17211d]/70 transition hover:border-[#176B45] hover:text-[#176B45]"><span>Run another screening</span><ArrowRight className="h-3.5 w-3.5" aria-hidden="true" focusable="false" /></button></div>
         </div>}
       </main>
     </div>

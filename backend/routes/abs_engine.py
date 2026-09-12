@@ -313,6 +313,9 @@ def _build_obligation(
         status = "NOT CLEARLY TRIGGERED"
     elif area == "IPR / DISCLOSURE" and not _clean(request.ip_activity):
         status = "INFORMATION REQUIRED"
+    elif area in {"APPROVAL / INTIMATION", "COMPETENT AUTHORITY", "BENEFIT-SHARING"}:
+        # Keep conditional: exact statutory pathway and exemptions require confirmation
+        status = "POTENTIALLY APPLICABLE"
     elif has_evidence and facts_missing:
         status = "POTENTIALLY APPLICABLE"
     elif has_evidence:
@@ -460,14 +463,11 @@ def _grounded_meaning_for_area(
         return base
 
     elif area == "APPROVAL / INTIMATION":
-        base = f"An approval or intimation pathway {qualifier} for accessing {ingredients_str} from {region}."
-        if llm_finding:
-            base += f" {llm_finding[:250]}"
-        elif evidence_excerpt:
-            base += f" Evidence from {evidence_source}: \"{evidence_excerpt[:200]}...\""
-        if partial:
-            base += " The applicable approval pathway depends on the nature of access/use and applicant/entity status."
-        return base
+        return (
+            "The submitted facts indicate that the Section 7 commercial-utilisation pathway may be relevant. "
+            "Prior intimation requirements should be confirmed based on the exact biological resource, "
+            "source/access circumstances, and any applicable exemption."
+        )
 
     elif area == "BENEFIT-SHARING":
         base = f"Benefit-sharing considerations {qualifier} given the biological origin of {ingredients_str}."
@@ -648,17 +648,19 @@ async def _assess(request: ABSScreenRequest) -> dict[str, Any]:
     else:
         verified_count = sum(1 for e in evidence if e.verified)
         has_statutory = any("regulation" in (e.document or "").lower() or "act" in (e.document or "").lower() for e in evidence)
-        facts_count = sum(
-            1 for v in [
-                request.source_region,
-                request.applicant_entity_status,
-                request.research_or_commercial_purpose,
-                request.access_use_context,
-            ] if _clean(v)
-        )
-        if len(evidence) >= 3 and verified_count >= 2 and facts_count >= 3 and has_statutory:
+        # For preliminary screening where exact statutory pathways and exemptions
+        # still require confirmation, confidence is kept at MODERATE
+        facts_provided = all([
+            _clean(request.source_region),
+            _clean(request.applicant_entity_status),
+            _clean(request.research_or_commercial_purpose),
+            _clean(request.access_use_context),
+            _clean(request.procurement_details),
+            _clean(request.existing_permissions),
+        ])
+        if len(evidence) >= 4 and verified_count >= 3 and facts_provided and has_statutory:
             confidence_label = "HIGH"
-        elif len(evidence) >= 2 or verified_count >= 1 or has_statutory:
+        elif len(evidence) >= 1 or verified_count >= 1 or has_statutory:
             confidence_label = "MODERATE"
         else:
             confidence_label = "LOW"
